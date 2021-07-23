@@ -38,7 +38,7 @@ def get_contact_data(model,region):
 
 
 for root, dirs, files in os.walk(args.basedir + '/' + args.model + '/convert2nc/csv', topdown=False):
-    for name in files:
+    for name in sorted(files):
         if name.endswith('csv'):
             print('Converting : ' + os.path.join(root, name))
 
@@ -60,26 +60,42 @@ for root, dirs, files in os.walk(args.basedir + '/' + args.model + '/convert2nc/
             except ValueError:
                 print('ERROR : could not read variable details from protocol. Quit.')
 
-            times =[]
-            value =[]
+            times = []
+            bins = []
+            values = []
 
             # read csv file
             f = open(os.path.join(root, name), 'r').readlines()
 
             # read time axis and data
+            if model == "mizer" and region == "east-bering-sea":
+                column_offset = 1
+            else:
+                column_offset = 0
+            if variable in ['tcblog10', 'tclog10']:
+                column_offset_values = column_offset + 1
+            else:
+                column_offset_values = column_offset
+
             for line in f[1:]:
                 fields = line.split(',')
-                times.append(int(fields[0])) #times
-                value.append(float(fields[1])) #value
+                times.append(int(fields[column_offset].replace('"', '')))
+                if variable in ['tcblog10', 'tclog10']:
+                    bins.append(float(fields[column_offset_values].replace('"', '')))
+                values.append(float(fields[1 + column_offset_values].replace('"', '')))
 
             # prepare output file
             ncout = netCDF4.Dataset(os.path.join(root.replace("/csv", "/netcdf"), os.path.splitext(name)[0] + '.nc'), 'w',format='NETCDF4_CLASSIC')
-            ncout.createDimension('time',len(times))
+            ncout.createDimension('time', len(set(times)))
+            if variable in ['tcblog10', 'tclog10']:
+                ncout.createDimension('bins', 6)
             ncout.createDimension('lon', 1)
             ncout.createDimension('lat', 1)
 
             # fill file
             time = ncout.createVariable('time',np.dtype('float32').char,('time'))
+            if variable in ['tcblog10', 'tclog10']:
+                bins_nc = ncout.createVariable('bins',np.dtype('float32').char,('bins'))
             lat = ncout.createVariable('lat',np.dtype('float32').char,('lat'))
             lon = ncout.createVariable('lon',np.dtype('float32').char,('lon'))
 
@@ -93,7 +109,7 @@ for root, dirs, files in os.walk(args.basedir + '/' + args.model + '/convert2nc/
             time_index_first = time_factor * (year_first - ref_year)
             time_index_last  = time_factor * (year_last  - ref_year + 1)
 
-            if len(times) != (time_index_last - time_index_first):
+            if len(set(times)) != (time_index_last - time_index_first):
                 print('ERROR : internal number of time steps don\'t match expected numbers from file name specifiers. Quit')
                 quit()
 
@@ -115,18 +131,30 @@ for root, dirs, files in os.walk(args.basedir + '/' + args.model + '/convert2nc/
             lon.axis = 'X'
             lon[:] = 0.0
 
-            var = ncout.createVariable(variable,np.dtype('float32').char,('time','lat','lon'), zlib=True, complevel=5, fill_value=1e+20)
+
+            if variable in ['tcblog10', 'tclog10']:
+                bins_nc[:] = range(1, 7)
+                bins_nc.long_name = 'log10 Weight Bins'
+                bins_nc.standard_name = 'log10_weight_bins'
+                bins_nc.units = '-'
+                bins_nc.axis = 'Z'
+                bins_nc.comment = 'log 10 weight bins as defined per simulation protocol: 1-10g, 10-100g, 100g-1kg, 1-10kg, 10-100kg, >100kg'
+                var = ncout.createVariable(variable,np.dtype('float32').char,('time','bins','lat','lon'), zlib=True, complevel=5, fill_value=1e+20)
+                var[:] = [values[i::len(set(times))] for i in range(len(set(times)))]
+            else:
+                var = ncout.createVariable(variable,np.dtype('float32').char,('time','lat','lon'), zlib=True, complevel=5, fill_value=1e+20)
+                var[:] = values[:]
+
             var.missing_value = 1e+20
             var.long_name = long_name
             var.units = units
-            var[:] = value[:]
+
 
             # set global attributes contact and institution from contacts.json
             ncout.contact = get_contact_data(model,region)[0]
             ncout.institution = get_contact_data(model,region)[1]
 
             ncout.close()
-
 
             if args.first_file:
                 quit()
